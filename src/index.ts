@@ -1,13 +1,3 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
-
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { OpenAI } from 'openai';
@@ -37,7 +27,7 @@ async function randomSessionId() {
 		method: 'POST',
 		headers: { 'oai-device-id': deviceId, ...baseHeaders },
 	});
-	const token = await response.json().then((data) => (data as { token: string }).token);
+	const token = await response.json().then((data) => (data as any)?.token);
 	return { deviceId, token };
 }
 
@@ -67,31 +57,12 @@ async function* linesToMessages(linesAsync: any) {
 
 const fetchChatApi = (init?: RequestInit<CfProperties<unknown>> | undefined) => fetch(`${baseUrl}/backend-api/conversation`, init);
 
-export interface Env {
-	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
-	// MY_KV_NAMESPACE: KVNamespace;
-	//
-	// Example binding to Durable Object. Learn more at https://developers.cloudflare.com/workers/runtime-apis/durable-objects/
-	// MY_DURABLE_OBJECT: DurableObjectNamespace;
-	//
-	// Example binding to R2. Learn more at https://developers.cloudflare.com/workers/runtime-apis/r2/
-	// MY_BUCKET: R2Bucket;
-	//
-	// Example binding to a Service. Learn more at https://developers.cloudflare.com/workers/runtime-apis/service-bindings/
-	// MY_SERVICE: Fetcher;
-	//
-	// Example binding to a Queue. Learn more at https://developers.cloudflare.com/queues/javascript-apis/
-	// MY_QUEUE: Queue;
-}
+export interface Env {}
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const { deviceId, token } = await randomSessionId();
 		const chatCompletionCreate = await request.json().then((data) => data as OpenAI.ChatCompletionCreateParams);
-		const messages = chatCompletionCreate.messages.reduce((acc, message) => {
-			acc.add(message.content);
-			return acc;
-		}, new Set<any>());
 		const body = {
 			action: 'next',
 			messages: chatCompletionCreate.messages.map((message) => ({
@@ -111,14 +82,35 @@ export default {
 			headers: { 'oai-device-id': deviceId, 'openai-sentinel-chat-requirements-token': token, ...baseHeaders },
 			body: JSON.stringify(body),
 		});
-		let fullContent = '';
+		let id, created, content;
 		for await (const message of linesToMessages(chunksToLines(response.body))) {
 			const parsed = JSON.parse(message);
-			console.debug(parsed);
-			const content = parsed?.message?.content?.parts[0] ?? '';
-			// if (content === '' || messages.has(content)) continue;
-			fullContent = content;
+			id = parsed?.message?.id;
+			created = parsed?.message?.create_time;
+			content = parsed?.message?.content?.parts[0] ?? '';
 		}
-		return new Response(fullContent);
+		return new Response(
+			JSON.stringify({
+				id,
+				created,
+				model: 'gpt-3.5-turbo',
+				object: 'chat.completion',
+				choices: [
+					{
+						finish_reason: 'stop',
+						index: 0,
+						message: {
+							content,
+							role: 'assistant',
+						},
+					},
+				],
+				usage: {
+					prompt_tokens: 0,
+					completion_tokens: 0,
+					total_tokens: 0,
+				},
+			})
+		);
 	},
 };
